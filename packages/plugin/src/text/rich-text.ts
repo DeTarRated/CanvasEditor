@@ -10,6 +10,7 @@ import {
   drawingUnderline,
   getLineOffset,
 } from "./drawing";
+import { wrapText } from "./line-break";
 import type { Attributes, RichTextLines, TextMatrices, TextMatrix, TextMatrixItem } from "./types";
 
 export class RichText {
@@ -48,52 +49,52 @@ export class RichText {
         line.config[TEXT_ATTRS.LINE_HEIGHT] || DEFAULT[TEXT_ATTRS.LINE_HEIGHT]
       );
       const lineOffset = getLineOffset(line);
-      const getDefaultMatrix = (): TextMatrix => ({
-        items: [],
-        // COMPAT: 高度给予最小值
-        originHeight: DEFAULT[TEXT_ATTRS.SIZE],
-        height: DEFAULT[TEXT_ATTRS.SIZE] * lineHeight,
-        width: 0,
-        lineHeight,
-        offsetX: lineOffset,
-        config: { ...line.config },
-        ascent: 0,
-        descent: 0,
-      });
-      let matrix: TextMatrix = getDefaultMatrix();
+      const items: TextMatrixItem[] = [];
       for (const fragment of line.chars) {
-        for (const character of fragment.char) {
-          const item = { char: character, config: { ...fragment.config } };
-          const { metric, font } = this.measure(item.char, item.config);
+        for (const char of fragment.char) {
+          const { metric, font } = this.measure(char, fragment.config);
           if (!metric) continue;
-          const text: TextMatrixItem = {
-            char: item.char,
+          const {
+            width,
+            actualBoundingBoxAscent: ascent,
+            actualBoundingBoxDescent: descent,
+          } = metric;
+          items.push({
+            char,
             font,
-            config: item.config,
-            width: metric.width,
-            height: 0,
-            ascent: metric.actualBoundingBoxAscent,
-            descent: metric.actualBoundingBoxDescent,
-          };
-          if (matrix.width + text.width + lineOffset > width) {
-            group.push(matrix);
-            // 重置行`matrix`
-            matrix = getDefaultMatrix();
-            // 换行标记
-            matrix.config[TEXT_ATTRS.BREAK_LINE_START] = TRULY;
-          }
-          const fontHeight = metric.actualBoundingBoxAscent + metric.actualBoundingBoxDescent;
-          text.height = fontHeight;
-          matrix.originHeight = Math.max(matrix.originHeight, fontHeight);
-          matrix.height = Math.max(matrix.height, fontHeight * lineHeight);
-          matrix.width = matrix.width + text.width;
-          matrix.ascent = Math.max(matrix.ascent, metric.actualBoundingBoxAscent);
-          matrix.descent = Math.max(matrix.descent, metric.actualBoundingBoxDescent);
-          matrix.items.push(text);
+            config: { ...fragment.config },
+            width,
+            height: ascent + descent,
+            ascent,
+            descent,
+          });
         }
       }
-      matrix.break = true;
-      group.push(matrix);
+      const rows = wrapText(items, width - lineOffset);
+      for (const [index, row] of rows.entries()) {
+        const matrix: TextMatrix = {
+          items: row,
+          // COMPAT: 高度给予最小值
+          originHeight: DEFAULT[TEXT_ATTRS.SIZE],
+          height: DEFAULT[TEXT_ATTRS.SIZE] * lineHeight,
+          width: 0,
+          lineHeight,
+          offsetX: lineOffset,
+          config: { ...line.config },
+          ascent: 0,
+          descent: 0,
+        };
+        for (const item of row) {
+          matrix.originHeight = Math.max(matrix.originHeight, item.height);
+          matrix.height = Math.max(matrix.height, item.height * lineHeight);
+          matrix.width += item.width;
+          matrix.ascent = Math.max(matrix.ascent, item.ascent);
+          matrix.descent = Math.max(matrix.descent, item.descent);
+        }
+        if (index > 0) matrix.config[TEXT_ATTRS.BREAK_LINE_START] = TRULY;
+        if (index === rows.length - 1) matrix.break = true;
+        group.push(matrix);
+      }
     }
     return group;
   };
